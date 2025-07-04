@@ -4,3 +4,9 @@ out = "out"
 libs = ["lib"]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+remappings = [
+    "@chainlink/contracts/=lib/chainlink/contracts/"
+]
+
+# The [dependencies] section has been removed as per the instructions.
