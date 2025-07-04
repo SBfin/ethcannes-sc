@@ -14,7 +14,7 @@ contract DeployTurnBasedScratcher is Script {
     
     function run() external {
         // Get chain parameter from environment or auto-detect
-        string memory targetChain = "BSC";
+        string memory targetChain = "RONIN";
         
         console.log("=== TurnBasedScratcher Deployment ===");
         console.log("Target Chain:", targetChain);
