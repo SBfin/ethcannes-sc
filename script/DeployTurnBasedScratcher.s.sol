@@ -22,13 +22,9 @@ contract DeployTurnBasedScratcher is Script {
         // Read chain-specific environment variables
         string memory usdTokenKey = string.concat(targetChain, "_ADDRESS_USD");
         string memory vrfCoordinatorKey = string.concat(targetChain, "_VRF_COORDINATOR");
-        string memory subscriptionIdKey = string.concat(targetChain, "_SUBSCRIPTION_ID");
-        string memory keyHashKey = string.concat(targetChain, "_KEY_HASH");
         
         address usdToken = vm.envAddress(usdTokenKey);
         address vrfCoordinator = vm.envAddress(vrfCoordinatorKey);
-        uint256 subscriptionId = vm.envUint(subscriptionIdKey);
-        bytes32 keyHash = vm.envBytes32(keyHashKey);
         
         // Get deployer private key
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -37,14 +33,10 @@ contract DeployTurnBasedScratcher is Script {
         // Validate required environment variables
         require(usdToken != address(0), string.concat(usdTokenKey, " not set in environment"));
         require(vrfCoordinator != address(0), string.concat(vrfCoordinatorKey, " not set in environment"));
-        require(subscriptionId != 0, string.concat(subscriptionIdKey, " not set in environment"));
-        require(keyHash != bytes32(0), string.concat(keyHashKey, " not set in environment"));
         
         console.log("Deployer:", deployer);
         console.log("USDC Token:", usdToken);
         console.log("VRF Coordinator:", vrfCoordinator);
-        console.log("Subscription ID:", subscriptionId);
-        console.log("Key Hash:", vm.toString(keyHash));
         
         // Check deployer ETH balance
         uint256 ethBalance = deployer.balance;
@@ -79,9 +71,7 @@ contract DeployTurnBasedScratcher is Script {
         // Deploy the TurnBasedScratcher contract
         TurnBasedScratcher scratcher = new TurnBasedScratcher(
             usdToken,
-            vrfCoordinator,
-            subscriptionId,
-            keyHash
+            vrfCoordinator
         );
         
         console.log("\n=== Deployment Successful! ===");
@@ -131,30 +121,27 @@ contract DeployTurnBasedScratcher is Script {
         console.log("Address:", address(scratcher));
         console.log(tokenName, "Token:", usdToken);
         console.log("VRF Coordinator:", vrfCoordinator);
-        console.log("Subscription ID:", subscriptionId);
-        console.log("Key Hash:", vm.toString(keyHash));
         console.log("Game Fee: 1", tokenName);
         
         console.log("\n=== Game Mechanics ===");
         console.log("- Players pay 1", tokenName, "to start a game");
         console.log("- Each game has 3 rounds of 3 cells each");
-        console.log("- Chainlink VRF provides randomness for payouts");
+        console.log("- Ronin VRF provides randomness for payouts");
         console.log("- House can make offers during negotiation phases");
         console.log("- Players can accept offers or continue to final payout");
         
         console.log("\n=== Next Steps ===");
         console.log("1. Update frontend contract address to:", address(scratcher));
-        console.log("2. Verify contract on Basescan");
-        console.log("3. Add contract as VRF consumer in Chainlink subscription");
+        console.log("2. Verify contract on Ronin Explorer");
+        console.log("3. Fund contract with RON for VRF fees");
         console.log("4. Test with small amounts first");
         console.log("5. Monitor game activity and contract balance");
         
         console.log("\n=== VRF Configuration ===");
-        console.log("- Subscription ID:", subscriptionId);
-        console.log("- Request confirmations: 3 blocks");
-        console.log("- Callback gas limit: 200,000");
-        console.log("- Words per round: 3");
-        console.log("- Native payment: true");
+        console.log("- Service: Ronin VRF");
+        console.log("- Callback gas limit: 500,000");
+        console.log("- Service charge: 0.01 USD in RON");
+        console.log("- Native payment: RON");
         
         console.log("\n=== Frontend Update Required ===");
         console.log("Update your frontend config with new contract address:");

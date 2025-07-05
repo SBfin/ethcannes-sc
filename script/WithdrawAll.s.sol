@@ -12,10 +12,10 @@ interface IERC20 {
 
 contract WithdrawAll is Script {
     // Base network USDC contract address
-    address constant BASE_USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    address constant BASE_USDC = 0x0B7007c13325C48911F73A2daD5FA5dCBf808aDc;
     
     // Your deployed TurnBasedScratcher contract address
-    address constant SCRATCHER_CONTRACT = 0x1D0a98dA8BD875B9478C38E897246cCE8848B1F3;
+    address payable constant SCRATCHER_CONTRACT = payable(0xA5a2250b0170bdb9bd0904C0440717f00A506023);
     
     function run() external {
         // Get private key from environment variable

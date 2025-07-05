@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
-import "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
+import "./consumer/VRFConsumer.sol";
+import "./interfaces/IRoninVRFCoordinatorForConsumers.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 interface IERC20 {
     function transfer(address to, uint256 amount) external returns (bool);
     function transferFrom(address from, address to, uint256 amount) external returns (bool);
 }
 
-contract TurnBasedScratcher is VRFConsumerBaseV2Plus {
+contract TurnBasedScratcher is VRFConsumer, Ownable {
     IERC20 public usdc;
     address public house;
     uint256 public gameFee = 1e6;
     uint256 public gameIdCounter;
 
-    // Chainlink VRF configuration
-    uint256 private immutable i_subscriptionId;
-    bytes32 private immutable i_keyHash;
-    uint32 private constant CALLBACK_GAS_LIMIT = 500000;
-    uint16 private constant REQUEST_CONFIRMATIONS = 3; // Minimum required for BSC and Base
-    uint32 private constant NUM_WORDS_PER_ROUND = 3;
+    // Ronin VRF configuration
+    uint256 private constant CALLBACK_GAS_LIMIT = 500000;
+    uint256 private constant NUM_WORDS_PER_ROUND = 3;
 
     enum GameState {
         AwaitingRandomnessRound1,
@@ -35,7 +33,7 @@ contract TurnBasedScratcher is VRFConsumerBaseV2Plus {
     struct Game {
         address player;
         GameState state;
-        uint256 vrfRequestId;
+        bytes32 vrfRequestHash;
         uint8[9] chosenCells;
         bool[9] isCellChosen;
         uint256[3] revealedPayouts; // Total payout per round
@@ -47,32 +45,53 @@ contract TurnBasedScratcher is VRFConsumerBaseV2Plus {
     }
 
     mapping(uint256 => Game) public games;
-    mapping(uint256 => uint256) public vrfRequestToGameId;
+    mapping(bytes32 => uint256) public vrfRequestToGameId;
     mapping(address => uint256[]) public gamesByUser;
 
     event GameStarted(uint256 indexed gameId, address indexed player);
     event CellsChosen(uint256 indexed gameId, uint8 round);
-    event RandomnessRequested(uint256 indexed gameId, uint256 indexed vrfRequestId);
+    event RandomnessRequested(uint256 indexed gameId, bytes32 indexed vrfRequestHash);
     event RoundRevealed(uint256 indexed gameId, uint8 round, uint256 payout, bool holeFound);
     event OfferSet(uint256 indexed gameId, uint8 round, uint256 offer);
     event GameFinished(uint256 indexed gameId, uint256 totalPayout, bool byHole);
 
-
-    constructor(address _usdcAddress, address _vrfCoordinator, uint256 _subscriptionId, bytes32 _keyHash)
-        VRFConsumerBaseV2Plus(_vrfCoordinator)
+    constructor(address _usdcAddress, address _vrfCoordinator)
+        VRFConsumer(_vrfCoordinator)
+        Ownable(msg.sender)
     {
         usdc = IERC20(_usdcAddress);
         house = msg.sender;
-        i_subscriptionId = _subscriptionId;
-        i_keyHash = _keyHash;
     }
+
+    // Receive function to accept RON for VRF payments
+    receive() external payable {}
 
     function setHouse(address _newHouse) external onlyOwner {
         house = _newHouse;
     }
 
-    function startGame(uint8[3] calldata cellIndexes) external {
+    function callbackGasLimit() public pure returns (uint256) {
+        return CALLBACK_GAS_LIMIT;
+    }
+
+    function gasPrice() public view returns (uint256) {
+        return 20e9 + block.basefee * 2; // basefee * 2 + 20 GWEI as recommended
+    }
+
+    function estimateVRFFee() public view returns (uint256) {
+        return IRoninVRFCoordinatorForConsumers(vrfCoordinator).estimateRequestRandomFee(
+            callbackGasLimit(),
+            gasPrice()
+        );
+    }
+
+    function startGame(uint8[3] calldata cellIndexes) external payable {
         require(usdc.transferFrom(msg.sender, address(this), gameFee), "USDC transfer failed");
+        
+        // Ensure contract has enough RON for VRF
+        uint256 vrfFee = estimateVRFFee();
+        require(msg.value >= vrfFee, "Insufficient RON for VRF fee");
+        
         gameIdCounter++;
         
         Game storage game = games[gameIdCounter];
@@ -82,34 +101,28 @@ contract TurnBasedScratcher is VRFConsumerBaseV2Plus {
         for (uint i=0; i<3; i++) {
             uint8 cell = cellIndexes[i];
             require(cell < 9, "Invalid cell index");
-            // isCellChosen is already initialized to false, no need to check
             game.isCellChosen[cell] = true;
-            game.chosenCells[i] = cell; // For round 1, startIndex is 0
+            game.chosenCells[i] = cell;
         }
 
         gamesByUser[msg.sender].push(gameIdCounter);
         emit GameStarted(gameIdCounter, msg.sender);
         emit CellsChosen(gameIdCounter, 1);
         
-        uint256 vrfRequestId = s_vrfCoordinator.requestRandomWords(
-            VRFV2PlusClient.RandomWordsRequest({
-                keyHash: i_keyHash,
-                subId: i_subscriptionId,
-                requestConfirmations: REQUEST_CONFIRMATIONS,
-                callbackGasLimit: CALLBACK_GAS_LIMIT,
-                numWords: NUM_WORDS_PER_ROUND,
-                extraArgs: VRFV2PlusClient._argsToBytes(VRFV2PlusClient.ExtraArgsV1({nativePayment: true}))
-            })
+        bytes32 vrfRequestHash = _requestRandomness(
+            msg.value,
+            callbackGasLimit(),
+            gasPrice(),
+            msg.sender
         );
         
-        game.vrfRequestId = vrfRequestId;
-        vrfRequestToGameId[vrfRequestId] = gameIdCounter;
-        emit RandomnessRequested(gameIdCounter, vrfRequestId);
+        game.vrfRequestHash = vrfRequestHash;
+        vrfRequestToGameId[vrfRequestHash] = gameIdCounter;
+        emit RandomnessRequested(gameIdCounter, vrfRequestHash);
     }
 
-    function playRound(uint256 gameId, uint8[3] calldata cellIndexes) external {
+    function playRound(uint256 gameId, uint8[3] calldata cellIndexes) external payable {
         Game storage game = games[gameId];
-        // adding house so that we can play a transaction on behalf of the player
         require(msg.sender == game.player || msg.sender == house, "Not player or house");
 
         uint8 round;
@@ -127,6 +140,10 @@ contract TurnBasedScratcher is VRFConsumerBaseV2Plus {
             revert("Not in a valid state to play a round");
         }
 
+        // Ensure sufficient RON for VRF
+        uint256 vrfFee = estimateVRFFee();
+        require(msg.value >= vrfFee, "Insufficient RON for VRF fee");
+
         for (uint i=0; i<3; i++) {
             uint8 cell = cellIndexes[i];
             require(cell < 9, "Invalid cell index");
@@ -137,26 +154,28 @@ contract TurnBasedScratcher is VRFConsumerBaseV2Plus {
 
         emit CellsChosen(gameId, round);
         
-        uint256 vrfRequestId = s_vrfCoordinator.requestRandomWords(
-            VRFV2PlusClient.RandomWordsRequest({
-                keyHash: i_keyHash,
-                subId: i_subscriptionId,
-                requestConfirmations: REQUEST_CONFIRMATIONS,
-                callbackGasLimit: CALLBACK_GAS_LIMIT,
-                numWords: NUM_WORDS_PER_ROUND,
-                extraArgs: VRFV2PlusClient._argsToBytes(VRFV2PlusClient.ExtraArgsV1({nativePayment: true}))
-            })
+        bytes32 vrfRequestHash = _requestRandomness(
+            msg.value,
+            callbackGasLimit(),
+            gasPrice(),
+            msg.sender
         );
         
-        game.vrfRequestId = vrfRequestId;
-        vrfRequestToGameId[vrfRequestId] = gameId;
-        emit RandomnessRequested(gameId, vrfRequestId);
+        game.vrfRequestHash = vrfRequestHash;
+        vrfRequestToGameId[vrfRequestHash] = gameId;
+        emit RandomnessRequested(gameId, vrfRequestHash);
     }
 
-    function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords) internal override {
-        uint256 gameId = vrfRequestToGameId[requestId];
+    function _fulfillRandomSeed(bytes32 _reqHash, uint256 _randomSeed) internal override {
+        uint256 gameId = vrfRequestToGameId[_reqHash];
         Game storage game = games[gameId];
-        require(game.vrfRequestId == requestId, "Invalid request ID");
+        require(game.vrfRequestHash == _reqHash, "Invalid request hash");
+
+        // Generate 3 random values from the single seed
+        uint256[3] memory randomWords;
+        randomWords[0] = uint256(keccak256(abi.encode(_randomSeed, 0)));
+        randomWords[1] = uint256(keccak256(abi.encode(_randomSeed, 1)));
+        randomWords[2] = uint256(keccak256(abi.encode(_randomSeed, 2)));
 
         uint256 roundPayout = 0;
         bool holeInThisRound = false;
@@ -244,7 +263,6 @@ contract TurnBasedScratcher is VRFConsumerBaseV2Plus {
 
     function finishGameAndClaimPayout(uint256 gameId) external {
         Game storage game = games[gameId];
-        // adding house so that we can play a transaction on behalf of the player
         require(msg.sender == game.player || msg.sender == house, "Not the player or house");
         require(game.state == GameState.Finished, "Not in a valid state to claim final payout");
 
@@ -289,6 +307,11 @@ contract TurnBasedScratcher is VRFConsumerBaseV2Plus {
 
     function withdraw(uint256 amount) external onlyOwner {
         require(usdc.transfer(owner(), amount), "Withdraw failed");
+    }
+
+    function withdrawRON(uint256 amount) external onlyOwner {
+        require(address(this).balance >= amount, "Insufficient RON balance");
+        payable(owner()).transfer(amount);
     }
 
     function getGame(uint256 _gameId) external view returns (Game memory) {
